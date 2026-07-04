@@ -9,21 +9,13 @@ Original file is located at
 # YANDEX
 """
 
-В рамках вашего кейса мы предоставляем вам API-доступ к сервису Yandex AI Studio.
-
-Ваши доступы (выделите текст, чтобы скопировать):
-
-API ключ:
-AQVNxK05kh4VaOEU4Fi8J3NNTp6-HXf7zBqH3L_l
-Folder ID:
-b1ggusvist6c2sia1dno
 
 !curl --request POST --data '{"yandexPassportOauthToken":AQVNxK05kh4VaOEU4Fi8J3NNTp6-HXf7zBqH3L_l}' https://iam.api.cloud.yandex.net/iam/v1/tokens
 
 !pip install yandex-chain
 from yandex_chain import YandexLLM, YandexGPTModel
 
-LLM = YandexLLM(model=YandexGPTModel.Pro, folder_id='b1ggusvist6c2sia1dno', iam_token='AQVNxK05kh4VaOEU4Fi8J3NNTp6-HXf7zBqH3L_l')
+LLM = YandexLLM(model=YandexGPTModel.Pro, folder_id='...', iam_token='...')
 print(LLM._modelUri)
 print(LLM("Бу! Испугался? Не бойся. Я друг, я тебя не обижу."))
 
