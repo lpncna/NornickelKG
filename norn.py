@@ -1073,238 +1073,204 @@ for node, temperature in high_temp_nodes:
 # Сохраняем финальную версию
 onto.save(file="mining_integrated.owl", format="rdfxml")
 
-"""Наличие YandexGPT API и чистого дампа Wikidata — это отличный технологический стек для решения задачи холодного старта. Wikidata даст вам строгое таксономическое ядро (словари), а YandexGPT выступит в роли интеллектуального экстрактора (извлечет факты из неразмеченных документов).
-Ниже представлена архитектура системы, которая позволит максимально быстро и качественно наполнить вашу онтологию.
-------------------------------
-## Архитектура наполнения онтологии (3-этапный подход)
-
-[Корпус документов] -> [1. YandexGPT OCR/Chunking] -> [2. LLM NER & Relation Extraction]
-                                                                    │
-[Дамп Wikidata]      -> [Словари: Материалы/Процессы]   -> [3. Entity Linking / Валидация] -> [Owlready2 / OWL]
-
-------------------------------
-## ЭТАП 1. Использование Wikidata: Разумно ли брать её за основу?
-Да, это максимально разумно. Более того, без готовых словарей терминов из Wikidata вы столкнетесь с проблемой синонимии и хаоса в данных.
-## Как это использовать правильно:
-
-   1. Экспортируйте плоские справочники: Извлеките из дампа Wikidata списки сущностей для классов Material, Process, Equipment, Property и Country. Вам нужны: ID (Q-number), Основное название на русском, Альтернативные названия (алиасы).
-   2. Создайте инверсный индекс для поиска: Поместите эти данные в быструю локальную базу (например, SQLite или Elasticsearch). При парсинге текстов вы будете сверяться с этим индексом.
-   3. Где Wikidata НЕ поможет: Не пытайтесь тянуть из Wikidata глубокие иерархии связей. Структура Wikidata (свойства вроде P279 «subclass of») слишком запутана и избыточна. Используйте её только как терминологический словарь.
-
-------------------------------
-## ЭТАП 2. Архитектура обработки документов через YandexGPT
-Поскольку корпус не размечен, а документы содержат таблицы и картинки, обработку нужно разбить на конвейер (Pipeline).
-## Шаг 1: Извлечение текста (Мультимодальность)
-
-* Для PDF и сканов с картинками/таблицами: Используйте специализированные модели, например, Yandex Vision OCR (или аналогичные библиотеки типа PyMuPDF + EasyOCR), чтобы перевести всё в текст.
-* Таблицы: Переводите таблицы в формат Markdown или JSON. LLM-модели (включая YandexGPT) прекрасно считывают структуру таблиц, если они представлены текстовой сеткой.
-
-## Шаг 2: Извлечение сущностей и связей (Promt Engineering)
-Передавайте в YandexGPT текст документа (или его логическую часть/главу) короткими порциями (чанками) с жестким системным промтом.
-
-Пример эффективного промта для YandexGPT:
-"Ты — эксперт в области горной металлургии. Изучи текст статьи и извлеки из него информацию строго в формате JSON по следующей схеме:
-{
-"publication": {"title": "...", "type": "...", "conclusions": ["..."]},
-"authors": [{"name": "...", "qualification": "..."}],
-"processes": [{"name": "...", "temperature_C": 1300}],
-"materials": ["..."]
-}
-Не выдумывай факты. Если температура процесса не указана, пиши null. Отвечай только валидным JSON без лишних слов."
-
-------------------------------
-## ЭТАП 3. Синхронизация и Entity Linking (Склейка данных)
-Самый критический этап. Если в одном документе написано "плавка медного концентрата", а в другом — "пирометаллургический передел меди", без правильного сопоставления в вашей онтологии появятся два разных дублирующих процесса.
-
-   1. Мягкое сопоставление (Entity Linking): Получив от YandexGPT название материала или процесса, отправьте его в ваш поисковый индекс Wikidata.
-   * Если найдено точное совпадение (или совпадение по алиасу) $\rightarrow$ используйте ID из Wikidata в качестве IRI объекта в Owlready2 (например, onto.Process("Q12345")).
-      * Если совпадений нет $\rightarrow$ создавайте новый уникальный объект, но логируйте его для ручной проверки.
-   2. Пакетная генерация кода (Batching): Не записывайте данные в OWL-файл по одной строчке. Накапливайте извлеченные JSON-объекты в промежуточной базе данных (например, PostgreSQL) и раз в час/день запускайте Python-скрипт с Owlready2, который будет генерировать итоговый .owl файл.
-
-------------------------------
-## Чек-лист: Как запустить процесс максимально быстро
-
-* Шаг 1: Выгрузите из Wikidata списки металлов, минералов, химических веществ (для Material), типов печей и мельниц (для Equipment), физических явлений (для Property) и стран.
-* Шаг 2: Напишите Python-скрипт, который берет один документ, очищает его от мусора, упаковывает в промт и отправляет в YandexGPT API.
-* Шаг 3: Прогоните тестовую выборку из 10-20 разнородных документов (один отчет, один патент, одна статья) и оцените качество JSON-ответа от YandexGPT. Настройте промт, если модель путает свойства данных и объектов.
-
-Если хотите, мы можем прямо сейчас написать скелет Python-скрипта, который принимает гипотетический JSON-ответ от YandexGPT, проверяет термины по словарю Wikidata и с помощью нашей модели Owlready2 автоматически создает и связывает объекты. Хотите посмотреть на реализацию такого конвейера?
-
-Составление словарей на основе Wikidata для специализированной отрасли (такой как металлургия) — это классическая задача, где «лобовой» подход через поиск одного родительского класса (instance of) часто дает сбой. В Wikidata иерархия классов построена по сетевому принципу, а не по древесному, и глубина вложенности может быть огромной.
-Чтобы точно ничего не упустить и собрать чистые списки, вам нужно использовать метод восходящего проектирования (Bottom-Up) в сочетании со специфическими SPARQL-запросами к вашему дампу (или публичному эндпоинту Wikidata).
-Ниже представлена стратегия, как правильно вычислить родительские классы для ваших сложных доменов и собрать словари.
-------------------------------
-## 1. Материалы (Химия, Сплавы, Минералы)
-Вам нужны не только химические элементы (chemical element — Q11344), но и химические соединения, минералы, сплавы и руды. В Wikidata все они объединены под мощными абстрактными классами.
-Основные родительские классы для материалов:
-
-* chemical substance (химическое вещество — Q79529) — сюда входят и простые элементы, и сложные молекулы, газы, кислоты.
-* alloy (сплав — Q102275) — критически важно для металлургии (стали, латуни, штейны).
-* mineral (минерал — Q7946) — исходное сырье (сульфиды, оксиды).
-* mixture (смесь / композит — Q1893326) — концентраты, шлаки, флюсы.
-
-Как сделать SPARQL-запрос для сбора:
-Используйте оператор wdt:P31/wdt:P279*. Он означает: «является экземпляром (instance of / P31) данного класса ИЛИ любого его подкласса (subclass of / P279) на любую глубину вложенности».
-
-# Запрос соберет все химические вещества и их подклассы
-SELECT ?item ?itemLabel WHERE {
-  ?item wdt:P31/wdt:P279* wd:Q79529 . # Подклассы Chemical substance
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "ru,en". }
-}
-
-------------------------------
-## 2. Оборудование: Как найти родительские классы, если их «нет»?
-Для оборудования (особенно металлургического — печи ванны, конвертеры, мельницы измельчения) страниц верхнего уровня действительно может не быть в явном виде, либо они классифицированы хаотично.
-Техника «Снайперского поиска» родительских классов:
-Вместо того чтобы гадать, найдите в Wikidata 3-5 конкретных, точно существующих объектов оборудования, которые используются на вашем производстве. Например:
-
-* Доменная печь (Blast furnace — Q182425)
-* Шаровая мельница (Ball mill — Q805171)
-* Дуговая сталеплавильная печь (Electric arc furnace — Q744645)
-
-Запустите к вашему дампу инверсивный SPARQL-запрос, чтобы посмотреть, к каким классам они привязаны выше по цепочке:
-
-# Находим общие родительские классы для конкретных типов оборудования
-SELECT DISTINCT ?parent ?parentLabel WHERE {
-  VALUES ?equipment { wd:Q182425 wd:Q805171 wd:Q744645 }
-  ?equipment wdt:P31/wdt:P279* ?parent .
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "ru". }
-}
-
-Вы увидите, что Wikidata поднимет вас к следующим фундаментальным классам, которые и станут вашими «якорями» для сбора словаря оборудования:
-
-* industrial equipment (промышленное оборудование — Q1620959) — главный класс.
-* metallurgical furnace (металлургическая печь — Q15632971) — покроет 80% плавильного парка.
-* mill (мельница / дробилка — Q44577) — для оборудования обогатительных фабрик.
-* machine (машина / механизм — Q11012) — самый широкий класс, если нужно добрать остатки.
-
-------------------------------
-## 3. Технологические процессы
-Для металлургии процессы делятся на добычу, обогащение и металлургический передел.
-Родительские классы для процессов:
-
-* metallurgical process (металлургический процесс — Q1922253) — обжиг, флотация, рафинирование, конвертирование.
-* chemical process (химический процесс — Q1064375) — выщелачивание, электролиз, гидрометаллургия.
-* mining (горные работы / добыча — Q44497).
-
-------------------------------
-## Практический алгоритм сборки словаря без мусора
-Чтобы ваш словарь не раздулся до миллионов нерелевантных сущностей (ведь в chemical substance входят и лекарства, и органическая химия, которая вам не нужна), примените метод пересечения и фильтрации:
-
-   1. Шаг 1: Фильтрация по отраслевому контексту (Свойства)
-   В Wikidata сущности связаны не только классами, но и контекстными свойствами. При выгрузке материалов или оборудования требуйте, чтобы объект был связан со свойством field of work (сфера деятельности — P101) или used by (используется в — P366), где значением выступает metallurgy (металлургия — Q11467) или mining (горное дело — Q44497).
-   2. Шаг 2: Извлечение синонимов (Алиасов)
-   Для каждой сущности выгружайте не только rdfs:label (основное имя), но и skos:altLabel (альтернативные названия на русском языке). В дампах Wikidata для меди (Q1411) в алиасах будет зашито и «Cu», и «Element 29», что критически важно для YandexGPT при сопоставлении.
-   3. Шаг 3: Создание плоской таблицы соответствия
-   На выходе из Wikidata сформируйте простую таблицу (или SQLite базу) вида:
-   [Локальный Класс онтологии (Material/Equipment)] | [ID Wikidata] | [Все варианты названий на русском через запятую]
-
-Если у вас под рукой есть названия 5-10 специфических материалов или приборов, которые точно есть в ваших документах, напишите их. Мы можем составить точечный SPARQL-запрос, который поднимется по графу Wikidata, найдет их идеальных «родителей» и покажет, по каким веткам собирать итоговый словарь. С каких конкретных терминов начнем тест?
-"""
+# wikidata subdictionary
 
 import json
+import os
 from collections import defaultdict
+from tqdm import tqdm
 
-def build_subclass_map(jsonl_path):
-    # Граф: класс -> список его прямых подклассов
-    subclass_graph = defaultdict(list)
+FULL_CLASS_GRAPH_CACHE = "wikidata_full_class_graph.json"
+WIKIDATA_JSONL = "/var/ccd/wikidata-ruen_t_filtered.jonsl"
+OUTPUT_DICT = "metallurgy_dict.jsonl"
 
-    print("Шаг 1: Чтение графа классов...")
+
+# === ШАГ 1: СБОР И СОХРАНЕНИЕ ПОЛНОЙ ИЕРАРХИИ КЛАССОВ ===
+def build_and_cache_full_graph(jsonl_path, cache_path):
+    # Граф: Родительский_Класс -> [Список его прямых подклассов]
+    full_graph = defaultdict(list)
+    print("Шаг 1: Чтение и построение ПОЛНОГО графа классов из дампа...")
+    
     with open(jsonl_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            # Чтобы не парсить тяжелый JSON целиком, отсекаем лишнее
-            if '"P279"' not in line:
+        for line in tqdm(f):
+            if '"P279"' not in line: 
                 continue
-
+                
             entity = json.loads(line)
             entity_id = entity.get('id')
             claims = entity.get('claims', {})
-
-            # Если у сущности есть P279, значит она является подклассом чего-то
+            
             if 'P279' in claims:
                 for parent_id in claims['P279']:
-                    # parent_id является родителем для entity_id
-                    subclass_graph[parent_id].append(entity_id)
+                    full_graph[parent_id].append(entity_id)
+                    
+    print(f"Полный граф построен. Уникальных родительских классов: {len(full_graph)}")
+    print(f"Сохраняем полную иерархию в кэш: {cache_path}...")
+    
+    with open(cache_path, 'w', encoding='utf-8') as f:
+        json.dump(full_graph, f, ensure_ascii=False)
+        
+    print("Полный граф успешно сохранен на диск.")
+    return full_graph
 
-    return subclass_graph
 
-def get_all_descendants(target_classes, subclass_graph):
-    """Рекурсивно (через BFS) находит все подклассы для целевых ID"""
-    all_subclasses = set(target_classes)
-    queue = list(target_classes)
+# Проверяем наличие полной карты классов на диске
+if os.path.exists(FULL_CLASS_GRAPH_CACHE):
+    print(f" Найдена полная иерархия классов: {FULL_CLASS_GRAPH_CACHE}. Загружаем...")
+    with open(FULL_CLASS_GRAPH_CACHE, 'r', encoding='utf-8') as f:
+        # JSON превращает ключи в строки, defaultdict восстановим для удобства
+        loaded_graph = json.load(f)
+        class_graph = defaultdict(list, loaded_graph)
+    print(f"Граф загружен. Всего родительских узлов: {len(class_graph)}")
+else:
+    # Строим и кэшируем полную карту, если её нет
+    class_graph = build_and_cache_full_graph(WIKIDATA_JSONL, FULL_CLASS_GRAPH_CACHE)
 
+'''
+import json
+import os
+from collections import defaultdict
+
+# --- НАСТРОЙКА ПУТЕЙ И ЦЕЛЕЙ ---
+FULL_CLASS_GRAPH_CACHE = "wikidata_full_class_graph.json"
+WIKIDATA_JSONL = "your_wikidata_dump.jsonl"
+OUTPUT_DICT = "multilingual_industry_dict.jsonl"
+
+
+
+# === ШАГ 1: ЗАГРУЗКА ИЛИ СБОР ПОЛНОЙ ИЕРАРХИИ КЛАССОВ ===
+def build_and_cache_full_graph(jsonl_path, cache_path):
+    full_graph = defaultdict(list)
+    print("Шаг 1: Построение ПОЛНОГО графа классов из дампа...")
+    
+    with open(jsonl_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if '"P279"' not in line: 
+                continue
+            entity = json.loads(line)
+            entity_id = entity.get('id')
+            claims = entity.get('claims', {})
+            
+            if 'P279' in claims:
+                for parent_id in claims['P279']:
+                    full_graph[parent_id].append(entity_id)
+                    
+    print(f"Полный граф построен. Всего родительских классов: {len(full_graph)}")
+    print(f"Сохраняем полную иерархию в кэш: {cache_path}...")
+    with open(cache_path, 'w', encoding='utf-8') as f:
+        json.dump(full_graph, f, ensure_ascii=False)
+    return full_graph
+
+
+if os.path.exists(FULL_CLASS_GRAPH_CACHE):
+    print(f" Найдена полная иерархия классов: {FULL_CLASS_GRAPH_CACHE}. Загружаем...")
+    with open(FULL_CLASS_GRAPH_CACHE, 'r', encoding='utf-8') as f:
+        class_graph = defaultdict(list, json.load(f))
+else:
+    class_graph = build_and_cache_full_graph(WIKIDATA_JSONL, FULL_CLASS_GRAPH_CACHE)
+
+'''
+# Обновленный список ваших целевых классов
+TARGET_ROOTS = [
+    'Q11344',     # chemical element
+    'Q43460564',  # chemical entity
+    'Q214609',    # material
+    'Q10683158',  # substance
+    'Q79529',     # chemical substance
+    'Q10273457',  # equipment
+    'Q1183543',   # appliance
+    'Q500669',    # technical process
+    'Q111752858', # physicochemical process
+    'Q1293220',   # physical phenomenon
+    'Q1799072',   # method
+    'Q104637425', # material process
+    'Q764285',    # chemical property
+    'Q6256'       # country
+]
+
+# === ПРОМЕЖУТОЧНЫЙ ШАГ: ПОЛУЧЕНИЕ ПОДКЛАССОВ ===
+def get_all_descendants(target_roots, subclass_graph):
+    print(f"\nВычисляем подклассы для заданных {len(target_roots)} целей...")
+    all_subclasses = set(target_roots)
+    queue = list(target_roots)
+    
     while queue:
         current = queue.pop(0)
         for child in subclass_graph.get(current, []):
             if child not in all_subclasses:
                 all_subclasses.add(child)
                 queue.append(child)
-
+                
+    print(f"Для ваших целей найдено {len(all_subclasses)} валидных подклассов.")
     return all_subclasses
 
-# --- НАСТРОЙКА ЦЕЛЕЙ ---
-# Задаем корневые классы, которые нас интересуют
-TARGET_ROOTS = [
-    'Q79529',    # chemical substance (включает химические элементы)
-    'Q102275',   # alloy (сплавы)
-    'Q1620959',  # industrial equipment (промышленное оборудование)
-    'Q15632971'  # metallurgical furnace (металлургические печи)
-]
+valid_classes_set = get_all_descendants(TARGET_ROOTS, class_graph)
 
-# Вычисляем карту подклассов (нужно запустить один раз)
-# jsonl_path = "your_wikidata_dump.jsonl"
-# graph = build_subclass_map(jsonl_path)
-# valid_classes = get_all_descendants(TARGET_ROOTS, graph)
-# print(f"Найдено подходящих подклассов во всей Wikidata: {len(valid_classes)}")
 
+# === ШАГ 2: СБОР ИТОГОВОГО ДВУЯЗЫЧНОГО СЛОВАРЯ ===
 def extract_dictionary(jsonl_path, valid_classes, output_path):
-    print("Шаг 2: Сбор целевых сущностей в словарь...")
-
+    print("\nШаг 2: Фильтрация дампа и сбор двуязычного словаря...")
     count = 0
+    
     with open(jsonl_path, 'r', encoding='utf-8') as f_in, \
          open(output_path, 'w', encoding='utf-8') as f_out:
-
-        for line in f_in:
-            # Быстрый пред-фильтр по строке: если нет P31, сущность точно не instance
+             
+        for line in tqdm(f_in):
             if '"P31"' not in line:
                 continue
-
+                
             entity = json.loads(line)
             claims = entity.get('claims', {})
             p31_values = claims.get('P31', [])
-
-            # ПРОВЕРКА: является ли сущность экземпляром (P31)
-            # одного из наших валидных подклассов (или самих корневых классов)
+            
+            # Проверяем, относится ли сущность к выбранным веткам
             if any(parent in valid_classes for parent in p31_values):
-
-                # Извлекаем данные
                 entity_id = entity.get('id')
-
-                # Название на русском (дефолт на английский, если нет русского)
                 labels = entity.get('labels', {})
-                title_ru = labels.get('ru', {}).get('value', labels.get('en', {}).get('value', ''))
+                
+                # Извлекаем названия (Label) для RU и EN
+                name_ru = labels.get('ru', {}).get('value', '')
+                name_en = labels.get('en', {}).get('value', '')
+                
+                # Если у объекта вообще нет ни русского, ни английского имени — пропускаем
+                if not name_ru and not name_en:
+                    continue
+                
+                # Извлекаем синонимы (Aliases)
+                aliases_data = entity.get('aliases', {})
+                aliases_ru = [a['value'] for a in aliases_data.get('ru', [])]
+                aliases_en = [a['value'] for a in aliases_data.get('en', [])]
+                
+                # Извлекаем описания (Descriptions)
+                descriptions_data = entity.get('descriptions', {})
+                desc_ru = descriptions_data.get('ru', {}).get('value', '')
+                desc_en = descriptions_data.get('en', {}).get('value', '')
+                
+                # Формируем чистую структуру для словаря
+                result_item = {
+                    'id': entity_id,
+                    'names': {
+                        'ru': name_ru if name_ru else None,
+                        'en': name_en if name_en else None
+                    },
+                    'aliases': {
+                        'ru': aliases_ru,
+                        'en': aliases_en
+                    },
+                    'descriptions': {
+                        'ru': desc_ru if desc_ru else None,
+                        'en': desc_en if desc_en else None
+                    },
+                    'matched_classes': [p for p in p31_values if p in valid_classes]
+                }
+                
+                f_out.write(json.dumps(result_item, ensure_ascii=False) + '\n')
+                count += 1
+                
+                if count % 100000 == 0:
+                    print(f"Собрано объектов в словарь: {count}...")
+                        
+    print(f" Двуязычный словарь успешно сформирован! Всего объектов: {count}")
 
-                # Синонимы на русском
-                aliases_list = entity.get('aliases', {}).get('ru', [])
-                aliases_ru = [a['value'] for a in aliases_list]
-
-                # Описание на русском
-                desc_ru = entity.get('descriptions', {}).get('ru', {}).get('value', '')
-
-                if title_ru:  # Нам нужны только именованные сущности
-                    result_item = {
-                        'id': entity_id,
-                        'name': title_ru,
-                        'aliases': aliases_ru,
-                        'description': desc_ru,
-                        'classes': [p for p in p31_values if p in valid_classes] # Для отладки: какой класс сработал
-                    }
-
-                    # Записываем в результирующий файл
-                    f_out.write(json.dumps(result_item, ensure_ascii=False) + '\n')
-                    count += 1
-
-    print(f"Успешно собрано объектов в словарь: {count}")
-
-# Итоговый запуск:
-# extract_dictionary(jsonl_path, valid_classes, "metallurgy_dict.jsonl")
+# Запуск сборщика словаря
+extract_dictionary(WIKIDATA_JSONL, valid_classes_set, OUTPUT_DICT)
