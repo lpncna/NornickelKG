@@ -8,10 +8,6 @@ Original file is located at
 
 # YANDEX
 """
-
-
-!curl --request POST --data '{"yandexPassportOauthToken":AQVNxK05kh4VaOEU4Fi8J3NNTp6-HXf7zBqH3L_l}' https://iam.api.cloud.yandex.net/iam/v1/tokens
-
 !pip install yandex-chain
 from yandex_chain import YandexLLM, YandexGPTModel
 
