@@ -24,7 +24,9 @@ apt-get install -y unrar   # или unar
 
 ```bash
 export YADISK_TOKEN=...        # OAuth-токен приложения с доступом к чтению Диска
-export ANTHROPIC_API_KEY=...   # для шага извлечения свойств
+export LLM_BACKEND=local
+export LOCAL_LLM_MODEL=qwen2.5:7b
+export MAX_SECONDS_PER_DOCUMENT=900 
 ```
 
 ## Запуск
@@ -33,6 +35,7 @@ export ANTHROPIC_API_KEY=...   # для шага извлечения свойс
 python3 main.py                     # полный прогон: Я.Диск -> JSON + БД
 python3 main.py --skip-yadisk       # переиспользовать уже скачанный output/staging
 python3 main.py --skip-llm          # проверить extract-слой без вызовов LLM (дёшево, быстро)
+python3 main.py --workers 4  # многопоточность
 ```
 
 ## Структура модулей
@@ -43,27 +46,12 @@ python3 main.py --skip-llm          # проверить extract-слой без
 | `yadisk_sync.py` | рекурсивная скачка папок с Я.Диска, идемпотентно (манифест) |
 | `unpack.py` | распаковка .rar/.zip/.7z, сборка bundle "документ+приложения" |
 | `extract_text.py` | текст по страницам + детектор битого текстового слоя (cid-коды) |
-| `extract_images.py` | изображения из PDF/DOCX + эвристика is_decorative |
+| `extract_images.py` | изображения из PDF/DOCX + is_decorative |
 | `extract_tables.py` | таблицы отдельно от параграфов (pdfplumber/python-docx) |
 | `classify.py` | regex-классификатор 4 типов документа, без LLM |
-| `properties_llm.py` | извлечение свойств по JSON-схеме конкретного типа (Anthropic API) |
+| `properties_llm.py` | извлечение свойств по JSON-схеме конкретного типа |
 | `dedup.py` | дедупликация по хешу нормализованного текста |
 | `db.py` / `db_schema.sql` | запись в SQLite |
 | `main.py` | оркестратор всего пайплайна |
 
-## Известные точки расширения (не реализовано автоматически)
 
-1. **OCR/vision-fallback** для страниц с `needs_ocr=True` — заглушка в
-   `extract_text.ocr_page_fallback`. Нужно решить: Tesseract локально или
-   vision-запрос к Claude API (дороже, но лучше на сложных сканах/схемах).
-2. **Сопоставление `document_links` с реальными `document_id`** внутри
-   корпуса (сейчас это просто сырые номера ссылок `[1]`, `[2,5]` — резолвинг
-   в граф связей между документами через сопоставление `references[].raw`
-   с уже загруженными документами — отдельный шаг после первого прохода).
-3. **camelot как второй проход** для PDF-таблиц, где pdfplumber даёт слабый
-   результат (актуально для сложных таблиц со сложной сеткой линий).
-4. Привязка изображений к конкретным полям свойств (например, "логотип →
-   research_team", "диаграмма → conclusion") сейчас происходит только через
-   ближайшую подпись `caption`; более точное сопоставление стоит делать на
-   этапе `properties_llm.py`, добавив в промпт список найденных
-   `images[].caption` и попросив модель проставить `linked_entity`.
